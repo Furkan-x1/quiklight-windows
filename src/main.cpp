@@ -234,7 +234,8 @@ private:
             int lastBrightness = s.brightness;
             LightMode lastMode = s.effect.mode;
             capture_ = (s.effect.mode == LightMode::Capture) ? std::make_unique<ScreenCapture>(s.monitor,s.verbose) : nullptr;
-            set_status(std::wstring(L"Running: ") + light_mode_name(s.effect.mode));
+            if (capture_) set_status(std::wstring(L"Running: Capture (" ) + widen(capture_->backend_name()) + L")");
+            else set_status(std::wstring(L"Running: ") + light_mode_name(s.effect.mode));
 
             LedFrame raw{}, mapped{}, output{}, smooth{}, last{};
             bool have=false, sent=false;
@@ -254,7 +255,8 @@ private:
                     if (s.effect.mode == LightMode::Capture) {
                         capture_ = std::make_unique<ScreenCapture>(s.monitor,s.verbose);
                     } else capture_.reset();
-                    set_status(std::wstring(L"Running: ") + light_mode_name(s.effect.mode));
+                    if (capture_) set_status(std::wstring(L"Running: Capture (" ) + widen(capture_->backend_name()) + L")");
+                    else set_status(std::wstring(L"Running: ") + light_mode_name(s.effect.mode));
                 }
                 if (s.effect.mode == LightMode::Capture && restart_capture_) {
                     restart_capture_ = false; capture_.reset();
@@ -318,7 +320,7 @@ public:
         WNDCLASSW wc{}; wc.lpfnWndProc=&Gui::wnd_proc_static; wc.hInstance=hinst_; wc.lpszClassName=L"QuiklightWindowsClass";
         wc.hCursor=nullptr; wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1); wc.hIcon=nullptr;
         if(!RegisterClassW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
-        hwnd_=CreateWindowExW(0,wc.lpszClassName,L"Quiklight Windows",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1040,900,nullptr,nullptr,hinst_,this);
+        hwnd_=CreateWindowExW(0,wc.lpszClassName,L"Quiklight Windows",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1100,1000,nullptr,nullptr,hinst_,this);
         if(!hwnd_)return false;
         build_controls(); load_ui_from_settings(); timer_=SetTimer(hwnd_,1,250,nullptr); add_tray(); ShowWindow(hwnd_,SW_SHOW); UpdateWindow(hwnd_); return true;
     }
@@ -363,50 +365,51 @@ private:
         auto F=[&](HWND h){if(h)SendMessageW(h,WM_SETFONT,(WPARAM)font,TRUE);};
         title_=add_label(L"Quiklight Windows",24,18,400,30);F(title_);
         add_label(L"Lighting mode",24,55,120,22);F(mode_label_=add_label(L"Mode",24,55,120,22));
-        mode_=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,145,51,330,220,hwnd_,(HMENU)APP_MODE,hinst_,nullptr);F(mode_);
-        for(int i=0;i<=15;i++)SendMessageW(mode_,CB_ADDSTRING,0,(LPARAM)light_mode_name((LightMode)i));
+        mode_=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST|CBS_NOINTEGRALHEIGHT|WS_VSCROLL,145,51,330,250,hwnd_,(HMENU)APP_MODE,hinst_,nullptr);F(mode_);
+        for(int i=0;i<=15;i++)SendMessageW(mode_,CB_ADDSTRING,0,(LPARAM)light_mode_name((LightMode)i)); SendMessageW(mode_,CB_SETMINVISIBLE,10,0);
         add_label(L"Effect speed",500,55,95,22);speed_=add_track(APP_SPEED,595,51,280,5,500);speed_val_=add_label(L"1.00x",885,55,65,22);F(speed_);F(speed_val_);
 
-        make_group(L"Playback / capture",18,88,475,220);
-        add_label(L"Monitor",35,118,80,22);monitor_=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST,120,114,350,160,hwnd_,(HMENU)APP_MONITOR,hinst_,nullptr);F(monitor_);
-        add_label(L"Brightness",35,154,80,22);brightness_=add_track(APP_BRIGHTNESS,120,150,280,0,255);brightness_val_=add_label(L"255",410,154,45,22);F(brightness_);F(brightness_val_);
-        add_label(L"Capture FPS",35,194,80,22);fps_=add_edit(APP_FPS,120,190,65);F(fps_);
-        add_label(L"Smoothing",220,194,75,22);smoothing_=add_edit(APP_SMOOTHING,295,190,65);F(smoothing_);
-        add_label(L"0 = instant; 0.99 = very smooth",370,194,110,38);F(add_label(L"Higher smoothing reduces flicker but adds response delay.",220,222,250,38));
-        add_label(L"Edge capture depth",35,265,110,22);depth_=add_track(APP_DEPTH,150,261,255,5,250);depth_val_=add_label(L"2.0%",410,265,55,22);F(depth_);F(depth_val_);
-        F(add_label(L"How far from each screen edge the ambient color is sampled.",35,286,420,18));
+        make_group(L"Playback / capture",18,88,475,250);
+        add_label(L"Monitor",35,118,80,22);monitor_=CreateWindowW(L"COMBOBOX",L"",WS_CHILD|WS_VISIBLE|CBS_DROPDOWNLIST|CBS_NOINTEGRALHEIGHT|WS_VSCROLL,120,114,350,220,hwnd_,(HMENU)APP_MONITOR,hinst_,nullptr);F(monitor_);
+        add_label(L"Brightness",35,156,80,22);brightness_=add_track(APP_BRIGHTNESS,120,152,280,0,255);brightness_val_=add_label(L"255",410,156,45,22);F(brightness_);F(brightness_val_);
+        add_label(L"Capture FPS",35,198,80,22);fps_=add_edit(APP_FPS,120,194,65);F(fps_);
+        add_label(L"Smoothing",220,198,75,22);smoothing_=add_edit(APP_SMOOTHING,295,194,65);F(smoothing_);
+        F(add_label(L"Higher values reduce flicker but add response delay. 0 = instant.",35,226,430,20));
+        F(add_label(L"Capture uses a non-blocking low-latency path and may drop busy GPU frames.",35,246,430,20));
+        add_label(L"Edge capture depth",35,278,110,22);depth_=add_track(APP_DEPTH,150,274,255,5,250);depth_val_=add_label(L"2.0%",410,278,55,22);F(depth_);F(depth_val_);
+        F(add_label(L"Percent of the screen width/height sampled inward from the edges.",35,302,430,20));
 
-        make_group(L"Color processing (Capture only)",510,88,475,220);
-        add_label(L"Saturation",530,118,90,22);sat_=add_edit(APP_SAT,625,114,70);F(sat_);F(add_label(L"Multiplier for color intensity.",705,118,240,22));
-        add_label(L"Value",530,154,90,22);value_=add_edit(APP_VALUE,625,150,70);F(value_);F(add_label(L"Brightness multiplier before output.",705,154,240,22));
-        add_label(L"Gamma",530,190,90,22);gamma_=add_edit(APP_GAMMA,625,186,70);F(gamma_);F(add_label(L"Controls midtone brightness.",705,190,240,22));
-        add_label(L"Min saturation",530,226,90,22);minsat_=add_edit(APP_MINSAT,625,222,70);F(minsat_);F(add_label(L"Minimum color saturation; raises weak colors.",705,226,250,22));
-        add_label(L"Hue shift",530,262,90,22);hue_=add_edit(APP_HUE,625,258,70);F(hue_);F(add_label(L"Rotates all captured hues in degrees.",705,262,245,22));
-        F(add_label(L"Edge depth is the key setting when an object is not close enough to the monitor border.",530,286,420,18));
+        make_group(L"Color processing (Capture only)",510,88,475,250);
+        add_label(L"Saturation",530,118,90,22);sat_=add_edit(APP_SAT,625,114,70);F(sat_);F(add_label(L"Color intensity multiplier",705,118,240,22));
+        add_label(L"Value",530,160,90,22);value_=add_edit(APP_VALUE,625,156,70);F(value_);F(add_label(L"Captured brightness multiplier",705,160,240,22));
+        add_label(L"Gamma",530,202,90,22);gamma_=add_edit(APP_GAMMA,625,198,70);F(gamma_);F(add_label(L"Changes midtone brightness",705,202,240,22));
+        add_label(L"Min saturation",530,244,90,22);minsat_=add_edit(APP_MINSAT,625,240,70);F(minsat_);F(add_label(L"Prevents near-gray colors",705,244,240,22));
+        add_label(L"Hue shift",530,286,90,22);hue_=add_edit(APP_HUE,625,282,70);F(hue_);F(add_label(L"Rotates captured colors",705,286,240,22));
+        F(add_label(L"These settings affect Capture mode only.",530,316,420,18));
 
-        make_group(L"Manual color / effects",18,320,475,250);
-        add_label(L"Red",35,350,45,22);red_=add_track(APP_RED,85,346,300,0,255);red_val_=add_label(L"255",395,350,45,22);F(red_);F(red_val_);
-        add_label(L"Green",35,388,45,22);green_=add_track(APP_GREEN,85,384,300,0,255);green_val_=add_label(L"64",395,388,45,22);F(green_);F(green_val_);
-        add_label(L"Blue",35,426,45,22);blue_=add_track(APP_BLUE,85,422,300,0,255);blue_val_=add_label(L"0",395,426,45,22);F(blue_);F(blue_val_);
-        F(add_label(L"Manual RGB is used by Static, Breathing, Wave and Strobe effects.",35,464,425,22));
-        F(add_label(L"Rainbow / Fire / Ocean / Forest / Aurora and other modes use their own palettes.",35,489,425,36));
+        make_group(L"Manual color / effects",18,355,475,265);
+        add_label(L"Red",35,385,45,22);red_=add_track(APP_RED,85,381,300,0,255);red_val_=add_label(L"255",395,385,45,22);F(red_);F(red_val_);
+        add_label(L"Green",35,425,45,22);green_=add_track(APP_GREEN,85,421,300,0,255);green_val_=add_label(L"64",395,425,45,22);F(green_);F(green_val_);
+        add_label(L"Blue",35,465,45,22);blue_=add_track(APP_BLUE,85,461,300,0,255);blue_val_=add_label(L"0",395,465,45,22);F(blue_);F(blue_val_);
+        F(add_label(L"Manual RGB is used by Static, Breathing, Wave and Strobe effects.",35,505,425,22));
+        F(add_label(L"Rainbow / Fire / Ocean / Forest / Aurora and other modes use their own palettes.",35,535,425,36));
 
-        make_group(L"LED mapping",510,320,475,250);
-        revt_=add_check(APP_REVT,L"Reverse top",530,350);revr_=add_check(APP_REVR,L"Reverse right",700,350);F(revt_);F(revr_);
-        revl_=add_check(APP_REVL,L"Reverse left",530,380);swap_=add_check(APP_SWAP,L"Swap left/right",700,380);F(revl_);F(swap_);
-        add_label(L"Top offset",530,420,80,22);toff_=add_edit(APP_TOFF,615,416,60);F(toff_);
-        add_label(L"Right offset",700,420,85,22);roff_=add_edit(APP_ROFF,790,416,60);F(roff_);
-        add_label(L"Left offset",530,458,80,22);loff_=add_edit(APP_LOFF,615,454,60);F(loff_);
-        F(add_label(L"Mapping fixes physical strip direction/orientation without changing capture.",530,492,420,40));
+        make_group(L"LED mapping",510,355,475,265);
+        revt_=add_check(APP_REVT,L"Reverse top",530,385);revr_=add_check(APP_REVR,L"Reverse right",700,385);F(revt_);F(revr_);
+        revl_=add_check(APP_REVL,L"Reverse left",530,420);swap_=add_check(APP_SWAP,L"Swap left/right",700,420);F(revl_);F(swap_);
+        add_label(L"Top offset",530,460,80,22);toff_=add_edit(APP_TOFF,615,456,60);F(toff_);
+        add_label(L"Right offset",700,460,85,22);roff_=add_edit(APP_ROFF,790,456,60);F(roff_);
+        add_label(L"Left offset",530,500,80,22);loff_=add_edit(APP_LOFF,615,496,60);F(loff_);
+        F(add_label(L"Mapping fixes physical strip direction/orientation without changing capture.",530,535,420,40));
 
-        make_group(L"What the settings do",18,582,967,155);
-        help_=CreateWindowW(L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_BORDER|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,32,610,935,110,hwnd_,(HMENU)APP_HELP,hinst_,nullptr);F(help_);
+        make_group(L"What the settings do",18,635,967,165);
+        help_=CreateWindowW(L"EDIT",L"",WS_CHILD|WS_VISIBLE|WS_BORDER|ES_MULTILINE|ES_READONLY|ES_AUTOVSCROLL|WS_VSCROLL,32,664,935,118,hwnd_,(HMENU)APP_HELP,hinst_,nullptr);F(help_);
 
-        start_=CreateWindowW(L"BUTTON",L"Start",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,30,760,150,38,hwnd_,(HMENU)APP_START,hinst_,nullptr);F(start_);
-        test_=CreateWindowW(L"BUTTON",L"Test LEDs",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,195,760,150,38,hwnd_,(HMENU)APP_TEST,hinst_,nullptr);F(test_);
-        save_=CreateWindowW(L"BUTTON",L"Save settings",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,360,760,150,38,hwnd_,(HMENU)APP_SAVE,hinst_,nullptr);F(save_);
-        autostart_=CreateWindowW(L"BUTTON",L"Start with Windows",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,525,760,175,38,hwnd_,(HMENU)APP_AUTOSTART,hinst_,nullptr);F(autostart_);
-        add_label(L"Status:",720,765,55,22);status_=add_label(L"Stopped",780,765,190,22);F(status_);
+        start_=CreateWindowW(L"BUTTON",L"Start",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,30,820,150,40,hwnd_,(HMENU)APP_START,hinst_,nullptr);F(start_);
+        test_=CreateWindowW(L"BUTTON",L"Test LEDs",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,195,820,150,40,hwnd_,(HMENU)APP_TEST,hinst_,nullptr);F(test_);
+        save_=CreateWindowW(L"BUTTON",L"Save settings",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,360,820,150,40,hwnd_,(HMENU)APP_SAVE,hinst_,nullptr);F(save_);
+        autostart_=CreateWindowW(L"BUTTON",L"Start with Windows",WS_CHILD|WS_VISIBLE|BS_PUSHBUTTON,525,820,175,40,hwnd_,(HMENU)APP_AUTOSTART,hinst_,nullptr);F(autostart_);
+        add_label(L"Status:",720,825,55,22);status_=add_label(L"Stopped",780,825,190,22);F(status_);
 
         all_controls_font(font);
     }

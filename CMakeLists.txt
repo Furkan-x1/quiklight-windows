@@ -9,5 +9,5 @@ add_executable(QuiklightWindows WIN32 src/main.cpp src/quiklight_hid.cpp src/scr
 target_include_directories(QuiklightWindows PRIVATE include)
 target_compile_definitions(QuiklightWindows PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_compile_options(QuiklightWindows PRIVATE /W4 /EHsc)
-target_link_libraries(QuiklightWindows PRIVATE d3d11 dxgi setupapi hid user32 gdi32 shell32 ole32 comctl32)
+target_link_libraries(QuiklightWindows PRIVATE d3d11 dxgi setupapi hid user32 gdi32 shell32 ole32 comctl32 windowsapp)
 set_target_properties(QuiklightWindows PROPERTIES OUTPUT_NAME "QuiklightWindows")

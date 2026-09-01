@@ -80,3 +80,11 @@ build\\Release\\QuiklightWindows.exe
 QuiklightWindows.exe --list-devices
 QuiklightWindows.exe --list-monitors
 ```
+
+### Capture latency
+The Windows capture backend uses three GPU staging buffers. It never blocks waiting for the current GPU copy to finish; completed frames are consumed first and busy frames are dropped. This keeps latency bounded while avoiding the previous failure mode where non-blocking mapping could starve the capture path entirely.
+
+
+### Capture backend
+
+Capture mode now prefers **Windows Graphics Capture (WGC)** on Windows 10 1903+ and automatically falls back to **DXGI Desktop Duplication** if WGC cannot be initialized. WGC targets the selected monitor through the Win32 `CreateForMonitor` interop API and uses a free-threaded D3D11 frame pool; this is intended to behave better with modern borderless/fullscreen-windowed games. Microsoft documents WGC as the Windows API for acquiring frames from a display or application window, while true exclusive fullscreen remains a special case because it can bypass normal desktop composition.

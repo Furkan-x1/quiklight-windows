@@ -13,6 +13,7 @@ public:
  explicit ScreenCapture(int monitor_index,bool verbose=false);
  ~ScreenCapture();
  bool capture(const Callback& cb);
+ const char* backend_name() const;
 private:
  struct Impl; Impl* p_;
 };
