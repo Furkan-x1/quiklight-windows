@@ -1,28 +1,90 @@
 # Quiklight Windows
 
-Windows ambient LED controller for the Quiklight / DX-LIGHT compatible HID controller.
+A native Windows port of the Quiklight ambient LED application for compatible DX-LIGHT/Quiklight HID controllers.
+
+## Features
+
+- Windows Desktop Duplication screen capture
+- USB HID LED output
+- Capture mode with configurable edge sampling depth
+- Native Win32 GUI (no external GUI framework)
+- Manual RGB controls
+- Built-in lighting effects:
+  - Capture (screen)
+  - Static / Manual color
+  - Rainbow
+  - Color cycle
+  - Breathing
+  - Wave
+  - Strobe
+  - Fire
+  - Ocean
+  - Forest
+  - Aurora
+  - Twinkle
+  - Police
+  - Warm white
+  - Cool white
+  - White
+- Brightness, smoothing, FPS and effect speed controls
+- Capture color controls: saturation, value, gamma, minimum saturation and hue shift
+- LED direction/order mapping controls
+- System tray integration
+- Optional Windows startup shortcut
+- Settings saved to `quiklight.ini` next to the executable
+
+## Capture edge depth
+
+`Edge capture depth` controls how far into the image the ambient color sampler looks.
+
+- `1-2%`: only the pixels very close to the monitor border influence the LEDs.
+- `3-5%`: a wider strip of the image contributes; a good starting point for most content.
+- `10%+`: colors farther from the border have a strong influence.
+
+For a typical monitor, start around **2-5%** and increase it if important image colors are not reaching the LEDs.
+
+## Color controls
+
+- **Saturation**: multiplies captured color saturation. Higher values make colors stronger.
+- **Value**: multiplies captured brightness/value before output.
+- **Gamma**: changes the brightness curve of captured colors. Lower values generally brighten midtones.
+- **Min saturation**: raises weak/gray colors toward the selected minimum saturation.
+- **Hue shift**: rotates captured colors around the color wheel.
+- **Smoothing**: blends the previous frame with the new frame. Higher values reduce flicker but increase response delay.
+
+## Manual/effect controls
+
+The manual RGB sliders are used by Static, Breathing, Wave, Strobe and Twinkle. Rainbow, Fire, Ocean, Forest, Aurora, Police and the white presets use their own colors.
+
+`Effect speed` controls animation speed. Capture mode uses the separate `Capture FPS` setting instead.
 
 ## Build
 
-Double-click `build-windows.bat`.
+Install Visual Studio 2022 / Build Tools with **Desktop development with C++** and the Windows SDK.
 
-The batch file removes the CMake build cache first, configures an x64 Release build with Visual Studio 2022, then builds the executable.
+Then double-click:
 
-## HID diagnostics
+```text
+build-windows.bat
+```
 
-The target controller is `VID_1A86 / PID_FE07`. The Windows HID backend enumerates all matching HID interfaces, including `MI_00`, and opens the device with write access first (then read/write as a fallback). This avoids failures on Windows HID interfaces that reject read access.
+The executable is produced as:
 
-If the device cannot be opened, the application reports the Windows `GetLastError()` code in the error message.
+```text
+build\\Release\\QuiklightWindows.exe
+```
 
-The device should appear in Device Manager as a HID device similar to:
+## Diagnostics
 
-`HID\\VID_1A86&PID_FE07&MI_00`
+```text
+QuiklightWindows.exe --list-devices
+QuiklightWindows.exe --list-monitors
+```
 
-## CLI diagnostics
+### Capture latency
+The Windows capture backend uses three GPU staging buffers. It never blocks waiting for the current GPU copy to finish; completed frames are consumed first and busy frames are dropped. This keeps latency bounded while avoiding the previous failure mode where non-blocking mapping could starve the capture path entirely.
 
-The executable accepts:
 
-- `--list-devices`
-- `--list-monitors`
-- `--help`
+### Capture backend
 
+Capture mode now prefers **Windows Graphics Capture (WGC)** on Windows 10 1903+ and automatically falls back to **DXGI Desktop Duplication** if WGC cannot be initialized. WGC targets the selected monitor through the Win32 `CreateForMonitor` interop API and uses a free-threaded D3D11 frame pool; this is intended to behave better with modern borderless/fullscreen-windowed games. Microsoft documents WGC as the Windows API for acquiring frames from a display or application window, while true exclusive fullscreen remains a special case because it can bypass normal desktop composition.
