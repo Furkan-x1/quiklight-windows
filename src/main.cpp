@@ -181,12 +181,14 @@ public:
     AppSettings get() const { std::lock_guard<std::mutex> lock(m_); return settings_; }
     void update(const AppSettings& s) {
         bool monitorChanged;
+        bool modeChanged;
         {
             std::lock_guard<std::mutex> lock(m_);
             monitorChanged = s.monitor != settings_.monitor;
+            modeChanged = s.effect.mode != settings_.effect.mode;
             settings_ = s;
             set_color_enhancement_config(settings_.color);
-            if (monitorChanged) restart_capture_ = true;
+            if (monitorChanged || modeChanged) restart_capture_ = true;
         }
         save_settings(s);
     }
@@ -195,15 +197,27 @@ public:
 
     void start() {
         if (running_) return;
-        { std::lock_guard<std::mutex> lock(m_); set_color_enhancement_config(settings_.color); status_ = L"Starting..."; }
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            set_color_enhancement_config(settings_.color);
+            status_ = L"Starting...";
+        }
         running_ = true;
         worker_ = std::thread([this] { run(); });
     }
+
     void stop() {
         running_ = false;
+        capture_running_ = false;
+        restart_capture_ = true;
         if (worker_.joinable()) worker_.join();
-        hid_.reset(); capture_.reset();
-        { std::lock_guard<std::mutex> lock(m_); status_ = L"Stopped"; }
+        if (capture_worker_.joinable()) capture_worker_.join();
+        hid_.reset();
+        capture_.reset();
+        {
+            std::lock_guard<std::mutex> lock(m_);
+            status_ = L"Stopped";
+        }
     }
 
     bool test_colors() {
@@ -227,49 +241,121 @@ public:
 private:
     void set_status(const std::wstring& s) { std::lock_guard<std::mutex> lock(m_); status_ = s; }
 
+    void start_capture_worker() {
+        stop_capture_worker();
+        capture_running_ = true;
+        restart_capture_ = false;
+        capture_worker_ = std::thread([this] { capture_loop(); });
+    }
+
+    void stop_capture_worker() {
+        capture_running_ = false;
+        restart_capture_ = true;
+        if (capture_worker_.joinable()) capture_worker_.join();
+        capture_.reset();
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        capture_ready_ = false;
+    }
+
+    void capture_loop() {
+        try {
+            auto s = get();
+            auto cap = std::make_unique<ScreenCapture>(s.monitor, s.verbose);
+            std::string backendName = cap->backend_name();
+            {
+                std::lock_guard<std::mutex> lock(capture_object_mutex_);
+                capture_ = std::move(cap);
+            }
+            set_status(std::wstring(L"Running: Capture (" ) + widen(backendName) + L")");
+
+            while (running_ && capture_running_) {
+                auto current = get();
+                if (current.effect.mode != LightMode::Capture || current.monitor != s.monitor) break;
+                set_color_enhancement_config(current.color);
+
+                auto start = std::chrono::steady_clock::now();
+                bool ok = false;
+                {
+                    std::lock_guard<std::mutex> lock(capture_object_mutex_);
+                    if (capture_) {
+                        ok = capture_->capture([&](uint32_t w,uint32_t h,const uint32_t* p,uint32_t stride){
+                            LedFrame frame{};
+                            compute_colors(w,h,p,stride,frame);
+                            frame = remap_frame(frame,current.mapping);
+                            {
+                                std::lock_guard<std::mutex> out_lock(capture_mutex_);
+                                latest_capture_ = frame;
+                                capture_ready_ = true;
+                            }
+                        });
+                    }
+                }
+                if (!ok) {
+                    // Poll aggressively; WGC's TryGetNextFrame is non-blocking.
+                    // Yield briefly to avoid consuming a CPU core when no new frame exists.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                } else {
+                    // Do not pace capture to LED output FPS. The latest frame is
+                    // always available to the LED worker, eliminating HID/capture
+                    // coupling and preventing a slow USB write from building lag.
+                    auto elapsed = std::chrono::steady_clock::now() - start;
+                    if (elapsed < std::chrono::milliseconds(1))
+                        std::this_thread::yield();
+                }
+            }
+        } catch (const std::exception& e) {
+            set_status(widen(std::string("Capture error: ") + e.what()));
+        }
+    }
+
+    bool get_latest_capture(LedFrame& out) {
+        std::lock_guard<std::mutex> lock(capture_mutex_);
+        if (!capture_ready_) return false;
+        out = latest_capture_;
+        return true;
+    }
+
     void run() {
         try {
             auto s = get();
             hid_ = std::make_unique<QuiklightHid>(0x1A86,0xFE07,(uint8_t)std::clamp(s.brightness,0,255));
             int lastBrightness = s.brightness;
             LightMode lastMode = s.effect.mode;
-            capture_ = (s.effect.mode == LightMode::Capture) ? std::make_unique<ScreenCapture>(s.monitor,s.verbose) : nullptr;
-            if (capture_) set_status(std::wstring(L"Running: Capture (" ) + widen(capture_->backend_name()) + L")");
+            bool captureMode = (s.effect.mode == LightMode::Capture);
+            if (captureMode) start_capture_worker();
             else set_status(std::wstring(L"Running: ") + light_mode_name(s.effect.mode));
 
-            LedFrame raw{}, mapped{}, output{}, smooth{}, last{};
+            LedFrame output{}, smooth{}, last{};
             bool have=false, sent=false;
             auto modeStart = std::chrono::steady_clock::now();
 
             while (running_) {
                 s = get();
-                set_color_enhancement_config(s.color);
                 if (s.brightness != lastBrightness) {
                     hid_->setBrightness((uint8_t)std::clamp(s.brightness,0,255));
                     lastBrightness = s.brightness;
                 }
+
                 if (s.effect.mode != lastMode) {
                     lastMode = s.effect.mode;
                     modeStart = std::chrono::steady_clock::now();
                     have=false; sent=false;
                     if (s.effect.mode == LightMode::Capture) {
-                        capture_ = std::make_unique<ScreenCapture>(s.monitor,s.verbose);
-                    } else capture_.reset();
-                    if (capture_) set_status(std::wstring(L"Running: Capture (" ) + widen(capture_->backend_name()) + L")");
-                    else set_status(std::wstring(L"Running: ") + light_mode_name(s.effect.mode));
-                }
-                if (s.effect.mode == LightMode::Capture && restart_capture_) {
-                    restart_capture_ = false; capture_.reset();
-                    capture_ = std::make_unique<ScreenCapture>(s.monitor,s.verbose);
-                    have=false; sent=false;
+                        start_capture_worker();
+                    } else {
+                        stop_capture_worker();
+                        set_status(std::wstring(L"Running: ") + light_mode_name(s.effect.mode));
+                    }
+                } else if (s.effect.mode == LightMode::Capture && restart_capture_) {
+                    start_capture_worker();
                 }
 
                 auto start = std::chrono::steady_clock::now();
                 if (s.effect.mode == LightMode::Capture) {
-                    bool ok = capture_ && capture_->capture([&](uint32_t w,uint32_t h,const uint32_t* p){
-                        compute_colors(w,h,p,raw); mapped=remap_frame(raw,s.mapping);
-                    });
-                    if (ok) output = mapped;
+                    LedFrame captured{};
+                    if (get_latest_capture(captured)) output = captured;
+                    // If no fresh capture is available yet, retain the last output
+                    // instead of replacing it with black. This avoids visible drops.
                 } else {
                     double t = std::chrono::duration<double>(start-modeStart).count();
                     output = remap_frame(effect_frame(s.effect,t),s.mapping);
@@ -281,7 +367,8 @@ private:
                     if (!hid_->sendFrame(smooth)) throw std::runtime_error("HID write failed");
                     last=smooth; sent=true;
                 }
-                int targetFps = (s.effect.mode == LightMode::Capture) ? s.fps : std::clamp((int)(30.f*s.effect.speed),10,120);
+
+                int targetFps = (s.effect.mode == LightMode::Capture) ? std::clamp(s.fps,10,120) : std::clamp((int)(30.f*s.effect.speed),10,120);
                 auto frameMs=std::chrono::milliseconds(std::max(1,1000/std::max(1,targetFps)));
                 auto elapsed=std::chrono::steady_clock::now()-start;
                 auto sleepFor=frameMs-std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
@@ -289,7 +376,10 @@ private:
             }
             if (hid_) { LedFrame black{}; hid_->sendFrame(black); }
         } catch(const std::exception& e) { set_status(widen(std::string("Error: ") + e.what())); }
-        hid_.reset(); capture_.reset(); running_=false;
+        capture_running_ = false;
+        if (capture_worker_.joinable() && capture_worker_.get_id()!=std::this_thread::get_id()) capture_worker_.join();
+        hid_.reset();
+        running_=false;
     }
 
     mutable std::mutex m_;
@@ -297,9 +387,15 @@ private:
     std::wstring status_=L"Stopped";
     std::atomic_bool running_{false};
     std::atomic_bool restart_capture_{false};
+    std::atomic_bool capture_running_{false};
     std::thread worker_;
+    std::thread capture_worker_;
     std::unique_ptr<QuiklightHid> hid_;
     std::unique_ptr<ScreenCapture> capture_;
+    mutable std::mutex capture_object_mutex_;
+    mutable std::mutex capture_mutex_;
+    LedFrame latest_capture_{};
+    bool capture_ready_=false;
 };
 
 constexpr int WMAPP_TRAY=WM_APP+11;
@@ -508,6 +604,10 @@ static int cli(int argc,wchar_t**argv){
 
 int APIENTRY wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int){
     int argc=0;wchar_t** argv=CommandLineToArgvW(GetCommandLineW(),&argc);bool cliMode=false;for(int i=1;i<argc;i++){std::wstring a=argv[i];if(a==L"--cli"||a==L"--list-devices"||a==L"--list-monitors"||a==L"--help")cliMode=true;}int result=0;
-    if(cliMode)result=cli(argc,argv);else{Gui gui(h);if(!gui.create())return 1;result=gui.run();}
+    if(cliMode){
+        AttachConsole(ATTACH_PARENT_PROCESS);
+        FILE* f=nullptr; freopen_s(&f,"CONOUT$","w",stdout); freopen_s(&f,"CONOUT$","w",stderr);
+        result=cli(argc,argv);
+    }else{Gui gui(h);if(!gui.create())return 1;result=gui.run();}
     LocalFree(argv);return result;
 }

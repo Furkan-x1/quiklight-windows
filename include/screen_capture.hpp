@@ -9,7 +9,7 @@ struct MonitorInfo { int index; std::wstring name; std::wstring device_name; lon
 std::vector<MonitorInfo> enumerate_monitors();
 class ScreenCapture {
 public:
- using Callback=std::function<void(uint32_t,uint32_t,const uint32_t*)>;
+ using Callback=std::function<void(uint32_t,uint32_t,const uint32_t*,uint32_t)>;
  explicit ScreenCapture(int monitor_index,bool verbose=false);
  ~ScreenCapture();
  bool capture(const Callback& cb);

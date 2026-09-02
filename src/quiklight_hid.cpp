@@ -10,10 +10,84 @@
 namespace quiklight {
 static uint8_t checksum8(const std::vector<uint8_t>&d){uint32_t s=0;for(auto b:d)s+=b;return(uint8_t)s;}
 static std::wstring getstr(HANDLE h, DWORD which){WCHAR b[256]{};BOOLEAN ok=FALSE;if(which==0)ok=HidD_GetManufacturerString(h,b,sizeof(b));else if(which==1)ok=HidD_GetProductString(h,b,sizeof(b));else ok=HidD_GetSerialNumberString(h,b,sizeof(b));return ok?std::wstring(b):L"";}
-std::vector<HidDeviceInfo> QuiklightHid::listDevices(){std::vector<HidDeviceInfo>out;GUID g;HidD_GetHidGuid(&g);HDEVINFO info=SetupDiGetClassDevsW(&g,nullptr,nullptr,DIGCF_PRESENT|DIGCF_DEVICEINTERFACE);if(info==INVALID_HANDLE_VALUE)return out;SP_DEVICE_INTERFACE_DATA id{};id.cbSize=sizeof(id);for(DWORD i=0;SetupDiEnumDeviceInterfaces(info,nullptr,&g,i,&id);i++){DWORD need=0;SetupDiGetDeviceInterfaceDetailW(info,&id,nullptr,0,&need,nullptr);if(!need)continue;auto buf=std::vector<BYTE>(need);auto detail=reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(buf.data());detail->cbSize=sizeof(*detail);if(!SetupDiGetDeviceInterfaceDetailW(info,&id,detail,need,nullptr,nullptr))continue;HANDLE h=CreateFileW(detail->DevicePath,GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,FILE_FLAG_OVERLAPPED,nullptr);if(h==INVALID_HANDLE_VALUE)h=CreateFileW(detail->DevicePath,GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);if(h==INVALID_HANDLE_VALUE)continue;HIDD_ATTRIBUTES a{};a.Size=sizeof(a);if(HidD_GetAttributes(h,&a)){HIDP_CAPS caps{};PHIDP_PREPARSED_DATA pp=nullptr;DWORD outlen=65;if(HidD_GetPreparsedData(h,&pp)){if(HidP_GetCaps(pp,&caps)==HIDP_STATUS_SUCCESS&&caps.OutputReportByteLength)outlen=caps.OutputReportByteLength;HidD_FreePreparsedData(pp);}out.push_back({detail->DevicePath,a.VendorID,a.ProductID,getstr(h,0),getstr(h,1),getstr(h,2),outlen});}CloseHandle(h);}SetupDiDestroyDeviceInfoList(info);return out;}
+std::vector<HidDeviceInfo> QuiklightHid::listDevices(){
+ std::vector<HidDeviceInfo> out;
+ GUID g{}; HidD_GetHidGuid(&g);
+ HDEVINFO info=SetupDiGetClassDevsW(&g,nullptr,nullptr,DIGCF_PRESENT|DIGCF_DEVICEINTERFACE);
+ if(info==INVALID_HANDLE_VALUE) return out;
+ SP_DEVICE_INTERFACE_DATA id{}; id.cbSize=sizeof(id);
+ for(DWORD i=0;SetupDiEnumDeviceInterfaces(info,nullptr,&g,i,&id);++i){
+  DWORD need=0; SetupDiGetDeviceInterfaceDetailW(info,&id,nullptr,0,&need,nullptr);
+  if(!need) continue;
+  std::vector<BYTE> buf(need);
+  auto detail=reinterpret_cast<PSP_DEVICE_INTERFACE_DETAIL_DATA_W>(buf.data());
+  detail->cbSize=sizeof(*detail);
+  if(!SetupDiGetDeviceInterfaceDetailW(info,&id,detail,need,nullptr,nullptr)) continue;
+  std::wstring path=detail->DevicePath;
+  std::wstring lower=path;
+  std::transform(lower.begin(),lower.end(),lower.begin(),[](wchar_t c){return (wchar_t)towlower(c);});
+  if(lower.find(L"vid_1a86") == std::wstring::npos || lower.find(L"pid_fe07") == std::wstring::npos) continue;
+
+  HidDeviceInfo d{}; d.path=path; d.vendor_id=0x1A86; d.product_id=0xFE07; d.output_report_len=65;
+  HANDLE h=CreateFileW(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+  if(h==INVALID_HANDLE_VALUE)
+    h=CreateFileW(path.c_str(),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+  if(h!=INVALID_HANDLE_VALUE){
+   HIDD_ATTRIBUTES a{}; a.Size=sizeof(a);
+   if(HidD_GetAttributes(h,&a)){ d.vendor_id=a.VendorID; d.product_id=a.ProductID; }
+   d.manufacturer=getstr(h,0); d.product=getstr(h,1); d.serial=getstr(h,2);
+   PHIDP_PREPARSED_DATA pp=nullptr; HIDP_CAPS caps{};
+   if(HidD_GetPreparsedData(h,&pp)){
+    if(HidP_GetCaps(pp,&caps)==HIDP_STATUS_SUCCESS && caps.OutputReportByteLength) d.output_report_len=caps.OutputReportByteLength;
+    HidD_FreePreparsedData(pp);
+   }
+   CloseHandle(h);
+  }
+  out.push_back(std::move(d));
+ }
+ SetupDiDestroyDeviceInfoList(info); return out;
+}
 QuiklightHid::QuiklightHid(uint16_t vid,uint16_t pid,uint8_t b,const std::wstring&p):vid_(vid),pid_(pid),brightness_(b),forced_path_(p){open();initialize();}
 QuiklightHid::~QuiklightHid(){if(dev_!=INVALID_HANDLE_VALUE)CloseHandle(dev_);}
-void QuiklightHid::open(){std::wstring chosen=forced_path_;if(chosen.empty()){for(const auto&d:listDevices()){if(d.vendor_id==vid_&&d.product_id==pid_){chosen=d.path;report_len_=d.output_report_len;if(d.manufacturer.find(L"ROBOBLOQ")!=std::wstring::npos||d.product.find(L"USBHID")!=std::wstring::npos)break;}}}if(chosen.empty())throw std::runtime_error("Quiklight HID device not found (VID=1A86 PID=FE07)");dev_=CreateFileW(chosen.c_str(),GENERIC_WRITE|GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);if(dev_==INVALID_HANDLE_VALUE){std::string msg="Failed to open Quiklight HID device";throw std::runtime_error(msg);}if(HIDD_ATTRIBUTES a{sizeof(a)};HidD_GetAttributes(dev_,&a)){PHIDP_PREPARSED_DATA pp=nullptr;HIDP_CAPS caps{};if(HidD_GetPreparsedData(dev_,&pp)){if(HidP_GetCaps(pp,&caps)==HIDP_STATUS_SUCCESS&&caps.OutputReportByteLength)report_len_=caps.OutputReportByteLength;HidD_FreePreparsedData(pp);}}if(report_len_<65)report_len_=65;}
+void QuiklightHid::open(){
+ std::vector<HidDeviceInfo> candidates;
+ if(!forced_path_.empty()) candidates.push_back({forced_path_,vid_,pid_,L"",L"",L"",65});
+ else {
+  for(const auto& d:listDevices()) if(d.vendor_id==vid_ && d.product_id==pid_) candidates.push_back(d);
+ }
+ if(candidates.empty()) throw std::runtime_error("Quiklight HID device not found (VID=1A86 PID=FE07)");
+ std::stable_sort(candidates.begin(), candidates.end(), [](const HidDeviceInfo& a, const HidDeviceInfo& b){
+  auto score = [](const std::wstring& path){
+   std::wstring p=path;
+   std::transform(p.begin(),p.end(),p.begin(),[](wchar_t c){return (wchar_t)towlower(c);});
+   if(p.find(L"&mi_00#")!=std::wstring::npos) return 0;
+   if(p.find(L"&mi_01#")!=std::wstring::npos) return 100;
+   return 10;
+  };
+  return score(a.path) < score(b.path);
+ });
+ DWORD lastErr=ERROR_FILE_NOT_FOUND; std::wstring lastPath;
+ for(const auto& d:candidates){
+  lastPath=d.path;
+  HANDLE h=CreateFileW(d.path.c_str(),GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+  if(h==INVALID_HANDLE_VALUE){
+   lastErr=GetLastError();
+   h=CreateFileW(d.path.c_str(),GENERIC_READ|GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,OPEN_EXISTING,0,nullptr);
+   if(h==INVALID_HANDLE_VALUE){ lastErr=GetLastError(); continue; }
+  }
+  dev_=h;
+  report_len_=d.output_report_len ? d.output_report_len : 65;
+  PHIDP_PREPARSED_DATA pp=nullptr; HIDP_CAPS caps{};
+  if(HidD_GetPreparsedData(dev_,&pp)){
+   if(HidP_GetCaps(pp,&caps)==HIDP_STATUS_SUCCESS && caps.OutputReportByteLength) report_len_=caps.OutputReportByteLength;
+   HidD_FreePreparsedData(pp);
+  }
+  if(report_len_<65) report_len_=65;
+  return;
+ }
+ std::ostringstream oss; oss<<"Failed to open Quiklight HID device (Windows error "<<lastErr<<")";
+ throw std::runtime_error(oss.str());
+}
 bool QuiklightHid::sendFrame(const LedFrame&f){return sendPacket(sync(f));}
 bool QuiklightHid::setBrightness(uint8_t value){brightness_=value; return sendPacket(makeBrightnessPacket(value));}
 void QuiklightHid::initialize(){if(!sendPacket(setOpen()))throw std::runtime_error("Failed to initialize Quiklight (setOpen)");if(!sendPacket(makeBrightnessPacket(brightness_)))throw std::runtime_error("Failed to initialize Quiklight (brightness)");if(!sendPacket(setSection()))throw std::runtime_error("Failed to initialize Quiklight (section)");LedFrame black{};if(!sendFrame(black))throw std::runtime_error("Failed to initialize Quiklight (black frame)");}

@@ -18,6 +18,8 @@
 #include <string>
 #include <cstring>
 #include <algorithm>
+#include <condition_variable>
+#include <mutex>
 
 #pragma comment(lib,"d3d11.lib")
 #pragma comment(lib,"dxgi.lib")
@@ -108,7 +110,6 @@ struct ScreenCapture::Impl {
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11DeviceContext> ctx;
     UINT width=0,height=0;
-    std::vector<uint32_t> pixels;
 
     struct StagingSlot {
         ComPtr<ID3D11Texture2D> texture;
@@ -125,6 +126,10 @@ struct ScreenCapture::Impl {
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession wgc_session{nullptr};
     winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice wgc_device{nullptr};
     bool winrt_initialized=false;
+    std::mutex frame_mutex;
+    std::condition_variable frame_cv;
+    bool frame_arrived=false;
+    winrt::event_token frame_arrived_token{};
 
     // DXGI fallback state.
     ComPtr<IDXGIOutputDuplication> dupl;
@@ -137,6 +142,12 @@ struct ScreenCapture::Impl {
     }
 
     ~Impl(){
+        if (wgc_pool && frame_arrived_token.value) {
+            try { wgc_pool.FrameArrived(frame_arrived_token); } catch (...) {}
+            frame_arrived_token = {};
+        }
+        { std::lock_guard<std::mutex> lock(frame_mutex); frame_arrived=false; }
+        frame_cv.notify_all();
         wgc_session={nullptr};
         wgc_pool={nullptr};
         wgc_item={nullptr};
@@ -201,11 +212,20 @@ struct ScreenCapture::Impl {
             DirectXPixelFormat::B8G8R8A8UIntNormalized,
             3,
             { (int)width,(int)height });
+
+        // Do not busy-poll TryGetNextFrame(). The capture system already exposes
+        // a worker-thread FrameArrived event; use it to wake our capture thread.
+        frame_arrived_token = wgc_pool.FrameArrived(
+            [this](auto&&, auto&&) {
+                {
+                    std::lock_guard<std::mutex> lock(frame_mutex);
+                    frame_arrived = true;
+                }
+                frame_cv.notify_one();
+            });
+
         wgc_session=wgc_pool.CreateCaptureSession(wgc_item);
         try { wgc_session.IsCursorCaptureEnabled(false); } catch(...) {}
-        // Borderless capture is preferable for an Ambilight application. On
-        // systems where disabling the indicator requires additional consent,
-        // the setter can fail; capture itself remains usable in that case.
         try { wgc_session.IsBorderRequired(false); } catch(...) {}
         wgc_session.StartCapture();
     }
@@ -246,7 +266,6 @@ struct ScreenCapture::Impl {
             throw_hresult(device->CreateTexture2D(&d,nullptr,&s.texture),"Create staging texture failed");
             throw_hresult(device->CreateQuery(&qd,&s.query),"Create GPU completion query failed");
         }
-        pixels.resize((size_t)width*height);
     }
 
     bool poll_ready(const ScreenCapture::Callback& cb){
@@ -256,20 +275,29 @@ struct ScreenCapture::Impl {
             HRESULT qr=ctx->GetData(s.query.Get(),nullptr,0,D3D11_ASYNC_GETDATA_DONOTFLUSH);
             if(qr==S_FALSE) continue;
             if(FAILED(qr)){s.pending=false;continue;}
+            // The GPU query has completed, so this staging resource is safe to
+            // map and, after unmapping, safe to reuse. Prefer the newest completed
+            // frame to keep latency low.
             if(s.sequence>=best_seq){best=i;best_seq=s.sequence;}
         }
         if(best<0) return false;
         auto&s=slots[best];
         D3D11_MAPPED_SUBRESOURCE m{};
         if(FAILED(ctx->Map(s.texture.Get(),0,D3D11_MAP_READ,0,&m))){s.pending=false;return false;}
-        for(UINT y=0;y<height;y++)
-            memcpy(pixels.data()+(size_t)y*width,
-                   (const uint8_t*)m.pData+(size_t)y*m.RowPitch,
-                   (size_t)width*4);
+        cb(width,height,static_cast<const uint32_t*>(m.pData),m.RowPitch/sizeof(uint32_t));
         ctx->Unmap(s.texture.Get(),0);
         s.pending=false;
-        for(auto&x:slots) if(x.pending && x.sequence<best_seq) x.pending=false;
-        cb(width,height,pixels.data());
+
+        // Do not mark older *unfinished* copies as free. Reusing a staging
+        // texture while the GPU still owns the previous CopyResource can cause
+        // an implicit GPU/CPU synchronization and is a major source of stalls.
+        // Completed older slots, however, can be discarded immediately.
+        for(auto&x:slots){
+            if(x.pending && x.sequence<best_seq){
+                HRESULT qr=ctx->GetData(x.query.Get(),nullptr,0,D3D11_ASYNC_GETDATA_DONOTFLUSH);
+                if(qr!=S_FALSE) x.pending=false;
+            }
+        }
         return true;
     }
 
@@ -287,10 +315,19 @@ struct ScreenCapture::Impl {
     }
 
     bool frame_wgc(const ScreenCapture::Callback&cb){
+        // Wait for the capture system instead of spinning at 1000+ Hz when no
+        // frame is available. This also avoids competing with a game that is
+        // trying to present frames on the same GPU.
+        {
+            std::unique_lock<std::mutex> lock(frame_mutex);
+            frame_cv.wait_for(lock, std::chrono::milliseconds(8), [&]{ return frame_arrived; });
+            frame_arrived=false;
+        }
+
         bool delivered=poll_ready(cb);
         try {
             winrt::Windows::Graphics::Capture::Direct3D11CaptureFrame latest{nullptr};
-            for(;;){
+            for(int guard=0; guard<8; ++guard){
                 auto next=wgc_pool.TryGetNextFrame();
                 if(!next) break;
                 latest=next;
