@@ -1,0 +1,43 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Configure x64 Release
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build QuiklightWindows
+        run: cmake --build build --config Release --parallel
+
+      - name: Stage distributable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\package | Out-Null
+          Copy-Item build\Release\QuiklightWindows.exe dist\package\
+          Copy-Item quiklight.ini.example dist\package\
+          Copy-Item README.md dist\package\
+          Copy-Item LICENSE dist\package\
+          Copy-Item NOTICE.md dist\package\
+
+      - name: Upload Windows build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuiklightWindows-x64-Release
+          path: dist/package/*
+          if-no-files-found: error
+          retention-days: 14
