@@ -660,7 +660,7 @@ private:
         }
     }
 
-    HINSTANCE hinst_{};HWND hwnd_{};UINT_PTR timer_{};Engine engine_;
+    HINSTANCE hinst_{};HWND hwnd_{};UINT_PTR timer_{};Engine engine_;bool start_hidden_{};
     HWND title_{},mode_{},mode_label_{},monitor_{},brightness_{},brightness_val_{},fps_{},smoothing_{},depth_{},depth_val_{},sat_{},value_{},gamma_{},minsat_{},hue_{};
     HWND revt_{},revr_{},revl_{},swap_{},toff_{},roff_{},loff_{},start_{},test_{},save_{},autostart_{},status_{},help_{};
     HWND speed_{},speed_val_{},red_{},red_val_{},green_{},green_val_{},blue_{},blue_val_{};
