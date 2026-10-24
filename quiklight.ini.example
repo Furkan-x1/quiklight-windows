@@ -1,9 +1,14 @@
 # Quiklight Windows configuration
 # Monitor numbers are shown by: QuiklightWindows.exe --list-monitors
 monitor=1
-brightness=255
+brightness=84
 fps=60
-smoothing=0.35
+smoothing=0.050
+mode=0
+effect_speed=1.000
+manual_r=255
+manual_g=64
+manual_b=0
 
 # LED strip mapping
 reverse_top=1
@@ -14,11 +19,12 @@ top_offset=0
 right_offset=0
 left_offset=0
 
-# Color enhancement
-saturation_boost=1.60
-value_boost=1.14
-gamma=0.93
-min_saturation=0.18
-hue_shift=0
+# Color enhancement / Capture
+capture_depth_percent=10.300
+saturation_boost=1.600
+value_boost=1.140
+gamma=0.930
+min_saturation=0.180
+hue_shift=0.000
 
 verbose=0

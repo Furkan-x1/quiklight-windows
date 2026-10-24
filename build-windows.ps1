@@ -21,4 +21,9 @@ if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
 
 cmake -S . -B build -G 'Visual Studio 17 2022' -A x64
 cmake --build build --config Release --parallel
-Write-Host "Built: $((Resolve-Path .\build\Release\QuiklightWindows.exe).Path)"
+$exePath = (Resolve-Path .\build\Release\QuiklightWindows.exe).Path
+$configPath = Join-Path (Split-Path $exePath) 'quiklight.ini'
+if (-not (Test-Path $configPath) -and (Test-Path .\quiklight.ini.example)) {
+    Copy-Item .\quiklight.ini.example $configPath
+}
+Write-Host "Built: $exePath"

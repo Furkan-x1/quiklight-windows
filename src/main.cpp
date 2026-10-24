@@ -408,17 +408,29 @@ constexpr int APP_START=2001,APP_TEST=2002,APP_MONITOR=2003,APP_BRIGHTNESS=2004,
 
 class Gui {
 public:
-    explicit Gui(HINSTANCE h):hinst_(h){}
+    explicit Gui(HINSTANCE h, bool startHidden = false) : hinst_(h), start_hidden_(startHidden) {}
     ~Gui(){if(timer_)KillTimer(hwnd_,timer_);remove_tray();}
 
     bool create(){
         INITCOMMONCONTROLSEX icc{sizeof(icc),ICC_STANDARD_CLASSES|ICC_BAR_CLASSES}; InitCommonControlsEx(&icc);
         WNDCLASSW wc{}; wc.lpfnWndProc=&Gui::wnd_proc_static; wc.hInstance=hinst_; wc.lpszClassName=L"QuiklightWindowsClass";
-        wc.hCursor=nullptr; wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1); wc.hIcon=nullptr;
+        wc.hCursor=LoadCursorW(nullptr, IDC_ARROW); wc.hbrBackground=(HBRUSH)(COLOR_WINDOW+1); wc.hIcon=LoadIconW(nullptr, IDI_APPLICATION);
         if(!RegisterClassW(&wc)&&GetLastError()!=ERROR_CLASS_ALREADY_EXISTS)return false;
         hwnd_=CreateWindowExW(0,wc.lpszClassName,L"Quiklight Windows",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1100,1000,nullptr,nullptr,hinst_,this);
         if(!hwnd_)return false;
-        build_controls(); load_ui_from_settings(); timer_=SetTimer(hwnd_,1,250,nullptr); add_tray(); ShowWindow(hwnd_,SW_SHOW); UpdateWindow(hwnd_); return true;
+        build_controls();
+        load_ui_from_settings();
+        timer_=SetTimer(hwnd_,1,250,nullptr);
+        add_tray();
+        if(start_hidden_){
+            ShowWindow(hwnd_,SW_HIDE);
+            // --startup starts the saved lighting mode while keeping the settings window hidden.
+            toggle_start();
+        }else{
+            ShowWindow(hwnd_,SW_SHOW);
+            UpdateWindow(hwnd_);
+        }
+        return true;
     }
     int run(){MSG msg{};while(GetMessageW(&msg,nullptr,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}return (int)msg.wParam;}
 
@@ -580,10 +592,73 @@ private:
         SetWindowTextW(help_,s.c_str());
     }
 
-    void add_tray(){NOTIFYICONDATAW nid{sizeof(nid)};nid.hWnd=hwnd_;nid.uID=ID_TRAY;nid.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;nid.uCallbackMessage=WMAPP_TRAY;nid.hIcon=nullptr;wcscpy_s(nid.szTip,L"Quiklight Windows");Shell_NotifyIconW(NIM_ADD,&nid);}
-    void remove_tray(){if(!hwnd_)return;NOTIFYICONDATAW nid{sizeof(nid)};nid.hWnd=hwnd_;nid.uID=ID_TRAY;Shell_NotifyIconW(NIM_DELETE,&nid);}
-    void show_tray_menu(){POINT pt;GetCursorPos(&pt);HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,1,engine_.running()?L"Stop":L"Start");AppendMenuW(menu,MF_STRING,2,L"Open");AppendMenuW(menu,MF_STRING,3,L"Exit");SetForegroundWindow(hwnd_);UINT c=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY,pt.x,pt.y,0,hwnd_,nullptr);DestroyMenu(menu);if(c==1)toggle_start();else if(c==2){ShowWindow(hwnd_,SW_SHOW);SetForegroundWindow(hwnd_);}else if(c==3)DestroyWindow(hwnd_);}
-    void install_autostart(){wchar_t startup[MAX_PATH]{};if(FAILED(SHGetFolderPathW(nullptr,CSIDL_STARTUP,nullptr,SHGFP_TYPE_CURRENT,startup)))return;std::wstring shortcutPath=std::wstring(startup)+L"\\Quiklight Windows.lnk";HRESULT hr=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);bool needUninit=SUCCEEDED(hr);IShellLinkW*link=nullptr;if(SUCCEEDED(CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&link)))){link->SetPath((exe_directory()+L"\\QuiklightWindows.exe").c_str());link->SetDescription(L"Quiklight Windows ambient LED service");IPersistFile*pf=nullptr;if(SUCCEEDED(link->QueryInterface(IID_PPV_ARGS(&pf)))){pf->Save(shortcutPath.c_str(),TRUE);pf->Release();}link->Release();}if(needUninit)CoUninitialize();MessageBoxW(hwnd_,L"A startup shortcut was created in your user Startup folder.",L"Quiklight Windows",MB_OK|MB_ICONINFORMATION);}
+    void add_tray(){
+        NOTIFYICONDATAW nid{};
+        nid.cbSize=sizeof(nid);
+        nid.hWnd=hwnd_;
+        nid.uID=ID_TRAY;
+        nid.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;
+        nid.uCallbackMessage=WMAPP_TRAY;
+        // The shell needs a valid icon handle to show a visible notification-area icon.
+        nid.hIcon=LoadIconW(nullptr,IDI_APPLICATION);
+        wcscpy_s(nid.szTip,L"Quiklight Windows");
+        // Keep the legacy notification callback format used by wnd_proc (WM_LBUTTONUP/WM_RBUTTONUP).
+        Shell_NotifyIconW(NIM_ADD,&nid);
+    }
+    void remove_tray(){
+        if(!hwnd_)return;
+        NOTIFYICONDATAW nid{};nid.cbSize=sizeof(nid);nid.hWnd=hwnd_;nid.uID=ID_TRAY;
+        Shell_NotifyIconW(NIM_DELETE,&nid);
+    }
+    void show_tray_menu(){
+        POINT pt;GetCursorPos(&pt);HMENU menu=CreatePopupMenu();
+        AppendMenuW(menu,MF_STRING,1,engine_.running()?L"Stop":L"Start");
+        AppendMenuW(menu,MF_STRING,2,L"Open");AppendMenuW(menu,MF_STRING,3,L"Exit");
+        SetForegroundWindow(hwnd_);
+        UINT c=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY,pt.x,pt.y,0,hwnd_,nullptr);
+        DestroyMenu(menu);
+        if(c==1)toggle_start();
+        else if(c==2){ShowWindow(hwnd_,SW_SHOW);SetForegroundWindow(hwnd_);}
+        else if(c==3)DestroyWindow(hwnd_);
+    }
+    void install_autostart(){
+        wchar_t startup[MAX_PATH]{};
+        HRESULT result=SHGetFolderPathW(nullptr,CSIDL_STARTUP,nullptr,SHGFP_TYPE_CURRENT,startup);
+        if(FAILED(result)){
+            MessageBoxW(hwnd_,L"Could not locate your Windows Startup folder.",L"Quiklight Windows",MB_OK|MB_ICONERROR);
+            return;
+        }
+
+        const std::wstring shortcutPath=std::wstring(startup)+L"\\Quiklight Windows.lnk";
+        const std::wstring exePath=exe_directory()+L"\\QuiklightWindows.exe";
+        HRESULT comResult=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+        const bool needUninit=SUCCEEDED(comResult);
+        IShellLinkW* link=nullptr;
+        result=CoCreateInstance(CLSID_ShellLink,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&link));
+        if(SUCCEEDED(result)){
+            result=link->SetPath(exePath.c_str());
+            if(SUCCEEDED(result))result=link->SetArguments(L"--startup");
+            if(SUCCEEDED(result))result=link->SetWorkingDirectory(exe_directory().c_str());
+            if(SUCCEEDED(result))result=link->SetDescription(L"Start Quiklight Windows in the system tray and activate lighting");
+            if(SUCCEEDED(result)){
+                IPersistFile* persist=nullptr;
+                result=link->QueryInterface(IID_PPV_ARGS(&persist));
+                if(SUCCEEDED(result)){
+                    result=persist->Save(shortcutPath.c_str(),TRUE);
+                    persist->Release();
+                }
+            }
+            link->Release();
+        }
+        if(needUninit)CoUninitialize();
+        if(SUCCEEDED(result)){
+            MessageBoxW(hwnd_,L"Startup is enabled. At sign-in, Quiklight will start hidden in the system tray and automatically activate the current lighting mode.\n\nClick 'Start with Windows' again if you need to update an older shortcut.",L"Quiklight Windows",MB_OK|MB_ICONINFORMATION);
+        }else{
+            std::wostringstream message;
+            message<<L"Could not create the startup shortcut. HRESULT: 0x"<<std::hex<<std::uppercase<<static_cast<unsigned long>(result);
+            MessageBoxW(hwnd_,message.str().c_str(),L"Quiklight Windows",MB_OK|MB_ICONERROR);
+        }
+    }
 
     HINSTANCE hinst_{};HWND hwnd_{};UINT_PTR timer_{};Engine engine_;
     HWND title_{},mode_{},mode_label_{},monitor_{},brightness_{},brightness_val_{},fps_{},smoothing_{},depth_{},depth_val_{},sat_{},value_{},gamma_{},minsat_{},hue_{};
@@ -591,7 +666,7 @@ private:
     HWND speed_{},speed_val_{},red_{},red_val_{},green_{},green_val_{},blue_{},blue_val_{};
 };
 
-static void usage(){std::wcout<<L"Quiklight Windows\n\nWith no arguments, the GUI starts.\n\nCLI:\n  --list-devices\n  --list-monitors\n  --help\n";}
+static void usage(){std::wcout<<L"Quiklight Windows\n\nWith no arguments, the GUI starts.\n  --startup starts the saved lighting mode hidden in the system tray.\n\nCLI:\n  --list-devices\n  --list-monitors\n  --help\n";}
 
 static int cli(int argc,wchar_t**argv){
     bool listd=false,listm=false;for(int i=1;i<argc;i++){std::wstring a=argv[i];if(a==L"--help"||a==L"-h"){usage();return 0;}if(a==L"--list-devices")listd=true;if(a==L"--list-monitors")listm=true;}
@@ -603,11 +678,25 @@ static int cli(int argc,wchar_t**argv){
 } // namespace
 
 int APIENTRY wWinMain(HINSTANCE h,HINSTANCE,PWSTR,int){
-    int argc=0;wchar_t** argv=CommandLineToArgvW(GetCommandLineW(),&argc);bool cliMode=false;for(int i=1;i<argc;i++){std::wstring a=argv[i];if(a==L"--cli"||a==L"--list-devices"||a==L"--list-monitors"||a==L"--help")cliMode=true;}int result=0;
+    int argc=0;
+    wchar_t** argv=CommandLineToArgvW(GetCommandLineW(),&argc);
+    bool cliMode=false;
+    bool startupMode=false;
+    for(int i=1;i<argc;i++){
+        std::wstring a=argv[i];
+        if(a==L"--startup")startupMode=true;
+        if(a==L"--cli"||a==L"--list-devices"||a==L"--list-monitors"||a==L"--help")cliMode=true;
+    }
+    int result=0;
     if(cliMode){
         AttachConsole(ATTACH_PARENT_PROCESS);
         FILE* f=nullptr; freopen_s(&f,"CONOUT$","w",stdout); freopen_s(&f,"CONOUT$","w",stderr);
         result=cli(argc,argv);
-    }else{Gui gui(h);if(!gui.create())return 1;result=gui.run();}
-    LocalFree(argv);return result;
+    }else{
+        Gui gui(h,startupMode);
+        if(!gui.create()){LocalFree(argv);return 1;}
+        result=gui.run();
+    }
+    LocalFree(argv);
+    return result;
 }
